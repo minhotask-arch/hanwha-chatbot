@@ -1,5 +1,6 @@
 {
-  "rewrites": [
-    { "source": "/api/chat", "destination": "/api/chat" }
-  ]
+  "framework": null,
+  "buildCommand": "",
+  "installCommand": "",
+  "outputDirectory": ""
 }
