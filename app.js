@@ -262,7 +262,7 @@ function sendPreset(text, btn) {
 }
 window.sendPreset = sendPreset;
 
-// ---------- API 호출 (스트리밍) ----------
+// ---------- API 호출 ----------
 async function sendToAPI(text) {
   const history = histories[currentMode];
   history.push({ role: 'user', content: text });
@@ -284,50 +284,62 @@ async function sendToAPI(text) {
 
     hideTyping();
 
-    if (!res.ok) throw new Error(`서버 오류 (${res.status})`);
-
-    const bubble = addStreamingMessage();
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = '';
-    let buffer = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const data = line.slice(6);
-          if (data === '[DONE]') break;
-
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.error) {
-              fullText += `\n\n⚠️ 오류: ${parsed.error}`;
-            } else if (parsed.text) {
-              fullText += parsed.text;
-            }
-          } catch { /* ignore */ }
-        }
-
-        bubble.innerHTML = renderMarkdown(fullText, true);
-        scrollToBottom();
-      }
-    } catch (readErr) {
-      if (readErr.name !== 'AbortError') throw readErr;
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`서버 오류 (${res.status}): ${errBody}`);
     }
 
-    bubble.innerHTML = renderMarkdown(fullText, false);
-    scrollToBottom();
+    const contentType = res.headers.get('Content-Type') || '';
 
-    if (fullText.trim()) {
-      history.push({ role: 'assistant', content: fullText });
+    // SSE 스트리밍 응답 (로컬 server.py)
+    if (contentType.includes('text/event-stream')) {
+      const bubble = addStreamingMessage();
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = '';
+      let buffer = '';
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6);
+            if (data === '[DONE]') break;
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.error) fullText += `\n\n⚠️ 오류: ${parsed.error}`;
+              else if (parsed.text) fullText += parsed.text;
+            } catch { /* ignore */ }
+          }
+
+          bubble.innerHTML = renderMarkdown(fullText, true);
+          scrollToBottom();
+        }
+      } catch (readErr) {
+        if (readErr.name !== 'AbortError') throw readErr;
+      }
+
+      bubble.innerHTML = renderMarkdown(fullText, false);
+      scrollToBottom();
+
+      if (fullText.trim()) history.push({ role: 'assistant', content: fullText });
+
+    // JSON 응답 (Vercel 서버리스)
+    } else {
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      const fullText = data.text || '';
+      addMessage(renderMarkdown(fullText, false), 'bot');
+
+      if (fullText.trim()) history.push({ role: 'assistant', content: fullText });
     }
 
     while (history.length > 20) {
